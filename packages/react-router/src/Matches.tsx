@@ -2,7 +2,7 @@
 
 import * as React from 'react'
 import { useSelector } from '@tanstack/react-store'
-import { rootRouteId } from '@tanstack/router-core'
+import { deepEqual, rootRouteId } from '@tanstack/router-core'
 import { isServer } from '@tanstack/router-core/isServer'
 import { CatchBoundary } from './CatchBoundary'
 import { useRouter } from './useRouter'
@@ -227,14 +227,35 @@ export function MatchRoute<
   const TMaskFrom extends string = TFrom,
   const TMaskTo extends string = '',
 >(props: MakeMatchRouteOptions<TRouter, TFrom, TTo, TMaskFrom, TMaskTo>): any {
-  const matchRoute = useMatchRoute()
-  const params = matchRoute(props as any) as boolean
+  const params = useMatchRouteSelection(props as any) as boolean
 
   if (typeof props.children === 'function') {
     return (props.children as any)(params)
   }
 
   return params ? props.children : null
+}
+
+// Computes the match inside the store selectors, so `MatchRoute` renders again
+// only when its match changes, not on every location or status change of a
+// navigation.
+function useMatchRouteSelection(opts: any) {
+  const router = useRouter()
+  const { pending, caseSensitive, fuzzy, includeSearch, ...rest } = opts
+  const select = () =>
+    router.matchRoute(rest, { pending, caseSensitive, fuzzy, includeSearch })
+
+  if (isServer ?? router.isServer) {
+    return select()
+  }
+
+  const options = { compare: deepEqual }
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  useSelector(router.stores.location, select, options)
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  useSelector(router.stores.resolvedLocation, select, options)
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  return useSelector(router.stores.status, select, options)
 }
 
 export interface UseMatchesBaseOptions<

@@ -1,3 +1,4 @@
+import * as React from 'react'
 import { afterEach, describe, expect, test } from 'vitest'
 import {
   act,
@@ -12,6 +13,7 @@ import { createMemoryHistory } from '@tanstack/history'
 import { createControlledPromise } from '@tanstack/router-core'
 import {
   Link,
+  MatchRoute,
   Outlet,
   RouterContextProvider,
   RouterProvider,
@@ -285,6 +287,150 @@ test('useMatchRoute callback identity tracks route matching state', async () => 
   })
   rerender()
   expect(result.current).toBe(previous)
+})
+
+describe('MatchRoute function child', () => {
+  afterEach(() => cleanup())
+
+  test('MatchRoute runs its function child again only when its match changes', async () => {
+    const renders: Array<string> = []
+    const calls: Array<string> = []
+    const post2Gate = createControlledPromise<void>()
+
+    function Post1() {
+      renders.push('post1')
+      return <div>Post 1</div>
+    }
+
+    const root = createRootRoute()
+    const posts = createRoute({
+      getParentRoute: () => root,
+      path: '/posts',
+      component: () => (
+        <MatchRoute to="/posts/$postId" params={{ postId: '1' }}>
+          {(match) => {
+            calls.push(
+              `${match ? 'match' : 'none'}@${router.stores.status.get()}`,
+            )
+            return match ? <Post1 /> : null
+          }}
+        </MatchRoute>
+      ),
+    })
+    const post = createRoute({
+      getParentRoute: () => posts,
+      path: '$postId',
+      loader: ({ params }) => (params.postId === '2' ? post2Gate : undefined),
+    })
+    const router = createRouter({
+      routeTree: root.addChildren([posts.addChildren([post])]),
+      history: createMemoryHistory({ initialEntries: ['/posts/1'] }),
+    })
+    render(<RouterProvider router={router} />)
+
+    expect(await screen.findByText('Post 1')).toBeInTheDocument()
+    await waitFor(() => expect(router.stores.status.get()).toBe('idle'))
+    expect(renders).toEqual(['post1'])
+
+    let navigation!: Promise<void>
+    act(() => {
+      navigation = router.navigate({
+        to: '/posts/$postId',
+        params: { postId: '2' },
+      })
+    })
+    await waitFor(() => expect(router.stores.status.get()).toBe('pending'))
+    expect(screen.getByText('Post 1')).toBeInTheDocument()
+    expect(renders).toEqual(['post1'])
+    expect(calls).toEqual(['match@pending'])
+
+    await act(async () => {
+      post2Gate.resolve()
+      await navigation
+    })
+    expect(screen.queryByText('Post 1')).not.toBeInTheDocument()
+    expect(renders).toEqual(['post1'])
+    expect(calls).toEqual(['match@pending', 'none@idle'])
+
+    await act(() =>
+      router.navigate({ to: '/posts/$postId', params: { postId: '1' } }),
+    )
+    expect(await screen.findByText('Post 1')).toBeInTheDocument()
+    expect(renders).toEqual(['post1', 'post1'])
+  })
+
+  test('MatchRoute runs an inline function child once per parent render during a pending navigation', async () => {
+    const parentRenders: Array<string> = []
+    const calls: Array<string> = []
+    const renders: Array<string> = []
+    const post2Gate = createControlledPromise<void>()
+    let rerenderParent!: () => void
+
+    function Post1() {
+      renders.push('post1')
+      return <div>Post 1</div>
+    }
+
+    const root = createRootRoute()
+    const posts = createRoute({
+      getParentRoute: () => root,
+      path: '/posts',
+      component: function Posts() {
+        const [tick, setTick] = React.useState(0)
+        rerenderParent = () => setTick((t) => t + 1)
+        parentRenders.push(`${tick}@${router.stores.status.get()}`)
+        // A new function on every render of this parent.
+        return (
+          <MatchRoute to="/posts/$postId" params={{ postId: '1' }}>
+            {(match) => {
+              calls.push(`${match ? 'match' : 'none'}@${tick}`)
+              return match ? <Post1 /> : null
+            }}
+          </MatchRoute>
+        )
+      },
+    })
+    const post = createRoute({
+      getParentRoute: () => posts,
+      path: '$postId',
+      loader: ({ params }) => (params.postId === '2' ? post2Gate : undefined),
+    })
+    const router = createRouter({
+      routeTree: root.addChildren([posts.addChildren([post])]),
+      history: createMemoryHistory({ initialEntries: ['/posts/1'] }),
+    })
+    render(<RouterProvider router={router} />)
+
+    expect(await screen.findByText('Post 1')).toBeInTheDocument()
+    await waitFor(() => expect(router.stores.status.get()).toBe('idle'))
+    parentRenders.length = 0
+    calls.length = 0
+    renders.length = 0
+
+    let navigation!: Promise<void>
+    act(() => {
+      navigation = router.navigate({
+        to: '/posts/$postId',
+        params: { postId: '2' },
+      })
+    })
+    await waitFor(() => expect(router.stores.status.get()).toBe('pending'))
+    expect(calls).toEqual([])
+
+    act(() => rerenderParent())
+    expect(parentRenders).toEqual(['1@pending'])
+    expect(calls).toEqual(['match@1'])
+    expect(renders).toEqual(['post1'])
+
+    await act(async () => {
+      post2Gate.resolve()
+      await navigation
+    })
+    expect(screen.queryByText('Post 1')).not.toBeInTheDocument()
+    expect(parentRenders).toEqual(['1@pending'])
+    expect(calls).toEqual(['match@1', 'none@1'])
+    expect(renders).toEqual(['post1'])
+  })
 })
 
 test('legacy notFoundRoute drops a stale parent layout after navigation', async () => {
