@@ -29,16 +29,26 @@ const baseManifest: ServerManifest = {
 }
 
 describe('final manifest resolver', () => {
-  it('shares cached base manifest load promises', async () => {
+  it('reuses the loaded base manifest', async () => {
     const loadBaseManifest = vi.fn(async () => baseManifest)
     const getBaseManifest = createCachedBaseManifestLoader(loadBaseManifest)
 
-    const first = getBaseManifest()
-    const second = getBaseManifest()
-
-    expect(second).toBe(first)
-    await expect(first).resolves.toBe(baseManifest)
+    await expect(getBaseManifest()).resolves.toBe(baseManifest)
+    await expect(getBaseManifest()).resolves.toBe(baseManifest)
     expect(loadBaseManifest).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not hand a pending base manifest load to later requests', async () => {
+    const loadBaseManifest = vi
+      .fn<() => Promise<ServerManifest>>()
+      .mockReturnValueOnce(new Promise<ServerManifest>(() => {}))
+      .mockResolvedValueOnce(baseManifest)
+    const getBaseManifest = createCachedBaseManifestLoader(loadBaseManifest)
+
+    void getBaseManifest()
+
+    await expect(getBaseManifest()).resolves.toBe(baseManifest)
+    expect(loadBaseManifest).toHaveBeenCalledTimes(2)
   })
 
   it('evicts rejected cached base manifest promises so requests can retry', async () => {
@@ -108,6 +118,35 @@ describe('final manifest resolver', () => {
         getBaseManifest,
       }),
     ).resolves.toMatchObject({ inlineCss: baseManifest.inlineCss })
+    expect(getBaseManifest).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not hand a pending final manifest to later requests', async () => {
+    const getBaseManifest = vi
+      .fn<() => Promise<ServerManifest>>()
+      .mockReturnValueOnce(new Promise<ServerManifest>(() => {}))
+      .mockResolvedValue(baseManifest)
+    const resolver = createFinalManifestResolver({ cacheCreateTransform: true })
+    const request = new Request('https://example.com')
+
+    void resolver.resolveCached({
+      request,
+      requestInlineCss: true,
+      getBaseManifest,
+    })
+    const second = await resolver.resolveCached({
+      request,
+      requestInlineCss: true,
+      getBaseManifest,
+    })
+    const third = resolver.resolveCached({
+      request,
+      requestInlineCss: true,
+      getBaseManifest,
+    })
+
+    expect(second).toMatchObject({ inlineCss: baseManifest.inlineCss })
+    expect(third).toBe(second)
     expect(getBaseManifest).toHaveBeenCalledTimes(2)
   })
 

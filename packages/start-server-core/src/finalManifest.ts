@@ -37,8 +37,8 @@ export interface FinalManifestOptions {
 }
 
 type FinalManifestCacheKey = 'inline-css' | 'linked-css'
-// An entry holds the pending manifest, then the manifest itself once it
-// resolves, so later requests read it without waiting.
+// An entry holds a resolved manifest, so later requests read it without
+// waiting, or the warmup's pending manifest until it resolves.
 type FinalManifestCache = Map<
   FinalManifestCacheKey,
   ServerManifest | Promise<ServerManifest>
@@ -75,17 +75,17 @@ export interface FinalManifestResolver {
 export function createCachedBaseManifestLoader(
   loadBaseManifest: GetBaseManifest,
 ): GetBaseManifest {
-  let baseManifestPromise: Promise<ServerManifest> | undefined
+  // Cache the loaded manifest, never the pending load: on Cloudflare Workers a
+  // promise only settles in the request that created it, so a load left
+  // pending by a cancelled request would never settle for later requests.
+  let baseManifest: ServerManifest | undefined
 
   return () => {
-    if (!baseManifestPromise) {
-      baseManifestPromise = loadBaseManifest().catch((error) => {
-        baseManifestPromise = undefined
-        throw error
-      })
+    if (baseManifest) {
+      return Promise.resolve(baseManifest)
     }
 
-    return baseManifestPromise
+    return loadBaseManifest().then((manifest) => (baseManifest ??= manifest))
   }
 }
 
@@ -252,11 +252,16 @@ function getOrCreateCachedFinalManifest(
     return cached
   }
 
-  return cacheFinalManifestPromise(
-    finalManifestCache,
-    cacheKey,
-    Promise.resolve().then(computeFinalManifest),
-  )
+  // Like the base manifest, a request caches the manifest once it resolves,
+  // not its pending promise.
+  return Promise.resolve()
+    .then(computeFinalManifest)
+    .then((manifest) => {
+      if (!finalManifestCache.has(cacheKey)) {
+        finalManifestCache.set(cacheKey, manifest)
+      }
+      return manifest
+    })
 }
 
 async function buildFinalManifest(opts: {

@@ -107,8 +107,10 @@ interface Entries {
   pluginAdapters: PluginAdaptersEntry
 }
 
-// Share initialization, then reuse the loaded entries without a promise wait.
-let cachedEntries: Entries | Promise<Entries> | undefined
+// Reuse the loaded entries without a promise wait. The pending load is not
+// shared: on Cloudflare Workers it would never settle for later requests once
+// the request that started it is cancelled.
+let cachedEntries: Entries | undefined
 let hasWarnedMissingCsrfMiddleware = false
 const defaultCsrfMiddleware = createCsrfMiddleware({
   filter: (ctx) => ctx.handlerType === 'serverFn',
@@ -141,14 +143,11 @@ async function loadEntries(): Promise<Entries> {
   }
 }
 
-function getEntries() {
-  if (!cachedEntries) {
-    cachedEntries = loadEntries().then((entries) => {
-      cachedEntries = entries
-      return entries
-    })
+function getEntries(): Entries | Promise<Entries> {
+  if (cachedEntries) {
+    return cachedEntries
   }
-  return cachedEntries
+  return loadEntries().then((entries) => (cachedEntries ??= entries))
 }
 
 function hasCsrfMiddleware(
